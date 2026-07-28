@@ -29,6 +29,7 @@ gh auth login --web --scopes 'repo,read:org,workflow,project'
 | `PORT` | `8787` | |
 | `BOARD_OWNER` | `freeflow-community` | org login |
 | `BOARD_NUMBER` | `1` | project number |
+| `BOARD_REPO` | `freeflow-community/flow` | where **New task** files issues |
 
 ## What it shows
 
@@ -53,6 +54,13 @@ server reports the same value (or 30s passes) — otherwise a poll that started
 before the write, or one reading the 3s status cache, returns the pre-click
 value and snaps the row back. Only staged tasks can be cancelled: once an agent
 has started or finished one, pulling it out from under them isn't a UI decision.
+
+**New task** in the header opens a form (title, body, "queue it immediately")
+that files a real issue in `BOARD_REPO` and adds it to the project — not a
+project draft, since the board only renders issues and an agent needs an issue
+number for a PR to close. A freshly-added item takes a few seconds to become
+visible to the project query, so `POST /api/new-task` waits until it is before
+replying; creating therefore takes ~5-8s, spent on the Create button.
 
 Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons —
 moving an item up out of the backlog promotes it into the active queue.

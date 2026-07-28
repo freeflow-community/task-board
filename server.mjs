@@ -21,6 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT ?? 8787)
 const OWNER = process.env.BOARD_OWNER ?? 'freeflow-community'
 const NUMBER = Number(process.env.BOARD_NUMBER ?? 1)
+const REPO = process.env.BOARD_REPO ?? 'freeflow-community/flow' // where new issues are filed
 
 const gh = (args) => exec('gh', args, { maxBuffer: 10 * 1024 * 1024 }).then((r) => JSON.parse(r.stdout))
 
@@ -157,6 +158,38 @@ async function setStatus(itemId, name) {
   return { status: name }
 }
 
+// New tasks are created as real issues rather than project drafts: the board
+// only renders issues, and an agent needs an issue number for a PR to close.
+async function createTask({ title, body = '', queue = false }) {
+  if (!title?.trim()) throw new Error('a title is required')
+
+  // Args go through execFile as an array, so user input is never shell-parsed.
+  const issue = await gh(['api', `repos/${REPO}/issues`, '-f', `title=${title.trim()}`, '-f', `body=${body}`])
+  if (!issue?.node_id) throw new Error('issue was created but returned no node id')
+
+  const { projectId } = await board()
+  const m = `mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}`
+  const res = await gh(['api', 'graphql', '-f', `p=${projectId}`, '-f', `c=${issue.node_id}`, '-f', `query=${m}`])
+  if (res.errors?.length) throw new Error(res.errors[0].message)
+
+  const itemId = res.data.addProjectV2ItemById.item.id
+  if (queue) await setStatus(itemId, 'Queued for Dev')
+
+  cache = { at: 0, data: null }
+  statusCache = { at: 0, data: null }
+
+  // A freshly-added item takes a beat to show up on the project — the mutation
+  // returns before the board query lists it. Don't reply until it does, or the
+  // client reloads and the task it just created isn't there.
+  for (let i = 0; i < 8; i++) {
+    const { items } = await board({ fresh: true })
+    if (items.some((it) => it.number === issue.number)) break
+    await new Promise((r) => setTimeout(r, 600))
+  }
+
+  return { number: issue.number, url: issue.html_url, itemId }
+}
+
 // Place one item directly after another (or at the top when `after` is null).
 async function position(projectId, itemId, after) {
   const mutation = after
@@ -237,6 +270,10 @@ createServer(async (req, res) => {
     }
     if (path === '/api/status') {
       return send(res, 200, JSON.stringify(await statuses()), 'application/json')
+    }
+    if (path === '/api/new-task' && req.method === 'POST') {
+      const { title, body, queue } = JSON.parse(await readBody(req))
+      return send(res, 200, JSON.stringify(await createTask({ title, body, queue })), 'application/json')
     }
     if (path === '/api/set-status' && req.method === 'POST') {
       const { itemId, status } = JSON.parse(await readBody(req))
