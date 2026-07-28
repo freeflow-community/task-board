@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task board</title>
+<style>
+  :root {
+    --bg: #f0f1f3;
+    --card: #ffffff;
+    --line: #e6e8eb;
+    --ink: #16181d;
+    --muted: #8b9098;
+    --accent: #2b6cf6;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app {
+    max-width: 1180px; margin: 0 auto; background: var(--card);
+    border-radius: 14px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 18px 24px; border-bottom: 1px solid var(--line);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fbf63; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -.2px; }
+  .sub { font: 13px var(--mono); color: var(--muted); }
+  header a { margin-left: auto; font-size: 13px; color: var(--muted); text-decoration: none; }
+  header a:hover { color: var(--accent); }
+
+  .cols { display: grid; grid-template-columns: 1.45fr 1fr; min-height: 560px; }
+  .left { border-right: 1px solid var(--line); }
+
+  .bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 13px 22px; border-bottom: 1px solid var(--line); background: #fafbfc;
+  }
+  .bar .label { font: 12px var(--mono); letter-spacing: .09em; color: var(--muted); text-transform: uppercase; }
+  .bar .count { font: 12px var(--mono); color: var(--muted); }
+  .bar .spacer { margin-left: auto; }
+  .controls { display: flex; gap: 9px; padding: 13px 22px; border-bottom: 1px solid var(--line); }
+  input, select {
+    font: 14px inherit; padding: 8px 11px; border: 1px solid var(--line);
+    border-radius: 8px; background: #fff; color: var(--ink); outline: none;
+  }
+  input { flex: 1; }
+  input:focus, select:focus { border-color: var(--accent); }
+  select { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
+  .row {
+    display: grid; grid-template-columns: 42px 1fr auto; gap: 4px 12px;
+    padding: 14px 22px; border-bottom: 1px solid var(--line); cursor: pointer;
+  }
+  .row:hover { background: #fafbfc; }
+  .rank { grid-row: span 2; font: 12px var(--mono); color: var(--muted); padding-top: 2px; }
+  .title { font-size: 15px; font-weight: 500; }
+  .age { font: 12px var(--mono); color: var(--muted); text-align: right; }
+  .meta { grid-column: 2 / 4; font: 12px var(--mono); color: var(--muted); }
+
+  .right { display: flex; flex-direction: column; }
+  .active { padding: 18px 22px; border-bottom: 1px solid var(--line); }
+  .pill {
+    display: inline-block; padding: 3px 9px; border-radius: 5px; background: var(--accent);
+    color: #fff; font: 11px var(--mono); letter-spacing: .07em; font-weight: 600;
+  }
+  .active .head { display: flex; align-items: center; gap: 10px; }
+  .active h2 { font-size: 17px; font-weight: 600; margin: 13px 0 0; letter-spacing: -.15px; }
+  .empty { padding: 40px 22px; text-align: center; color: var(--muted); font-size: 14px; }
+  .empty .hint { font: 12px var(--mono); margin-top: 7px; opacity: .8; }
+
+  .next .row { grid-template-columns: 26px 1fr auto; padding: 13px 22px; }
+  .banner {
+    padding: 10px 22px; background: #fff8e6; border-bottom: 1px solid #f0e2b8;
+    font: 12px var(--mono); color: #7a5c12;
+  }
+  .err { padding: 22px; color: #b3261e; font: 13px var(--mono); }
+</style>
+</head>
+<body>
+<div class="app" id="app"><div class="empty">loading…</div></div>
+
+<script>
+const $ = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstChild }
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+function age(iso) {
+  const d = Math.floor((Date.now() - new Date(iso)) / 86400000)
+  if (d < 1) return 'today'
+  return d + 'd'
+}
+
+function metaLine(it) {
+  const bits = ['#' + it.number, it.repo.split('/')[1]]
+  for (const l of it.labels) bits.push(l.name)
+  if (it.assignees.length) bits.push('@' + it.assignees[0])
+  return bits.join(' · ')
+}
+
+function rowHTML(it, rank) {
+  return `<div class="row" data-url="${esc(it.url)}">
+    <div class="rank">${esc(rank)}</div>
+    <div class="title">${esc(it.title)}</div>
+    <div class="age">${esc(age(it.createdAt))}</div>
+    <div class="meta">${esc(metaLine(it))}</div>
+  </div>`
+}
+
+let BOARD = null
+let filter = { q: '', status: 'all' }
+
+function visible() {
+  const q = filter.q.toLowerCase()
+  return BOARD.items.filter((it) => {
+    if (filter.status !== 'all' && (it.status ?? '—') !== filter.status) return false
+    if (!q) return true
+    return (it.title + ' ' + metaLine(it)).toLowerCase().includes(q)
+  })
+}
+
+function render() {
+  const items = visible()
+  // Board order is the queue: whatever is In Progress is running, the rest wait.
+  const active = items.find((it) => it.status === 'In Progress') ?? null
+  const queue = items.filter((it) => it !== active)
+  const statuses = [...new Set(BOARD.items.map((it) => it.status ?? '—'))]
+
+  const app = document.getElementById('app')
+  app.innerHTML = `
+    <header>
+      <span class="dot"></span>
+      <h1>Task board</h1>
+      <span class="sub">${esc(BOARD.title)}</span>
+      <a href="${esc(BOARD.url)}" target="_blank">open in GitHub →</a>
+    </header>
+    ${BOARD.stale ? `<div class="banner">snapshot from ${esc(BOARD.fetchedAt)} — no live server reachable</div>` : ''}
+    <div class="cols">
+      <div class="left">
+        <div class="bar">
+          <span class="label">Backlog</span>
+          <span class="count">${queue.length} unscheduled</span>
+        </div>
+        <div class="controls">
+          <input id="q" placeholder="Search" value="${esc(filter.q)}">
+          <select id="status">
+            <option value="all">All</option>
+            ${statuses.map((s) => `<option value="${esc(s)}"${s === filter.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
+          </select>
+        </div>
+        <div id="list">${queue.map((it, i) => rowHTML(it, i + 1)).join('') || '<div class="empty">nothing matches</div>'}</div>
+      </div>
+      <div class="right">
+        <div class="active">
+          ${active ? `
+            <div class="head"><span class="pill">ACTIVE</span><span class="sub">#${active.number}</span></div>
+            <h2>${esc(active.title)}</h2>
+          ` : `<div class="empty">No active task<div class="hint">nothing is In Progress</div></div>`}
+        </div>
+        <div class="bar"><span class="label">Up next</span><span class="count">${Math.min(4, queue.length)}</span></div>
+        <div class="next">${queue.slice(0, 4).map((it, i) => rowHTML(it, i + 1)).join('') || '<div class="empty">queue is empty</div>'}</div>
+      </div>
+    </div>`
+
+  app.querySelectorAll('.row').forEach((r) =>
+    r.addEventListener('click', () => window.open(r.dataset.url, '_blank')))
+
+  const q = document.getElementById('q')
+  q.addEventListener('input', (e) => { filter.q = e.target.value; render(); document.getElementById('q').focus() })
+  document.getElementById('status').addEventListener('change', (e) => { filter.status = e.target.value; render() })
+}
+
+async function boot() {
+  try {
+    const res = await fetch('/api/board')
+    if (!res.ok) throw new Error((await res.json()).error ?? res.statusText)
+    BOARD = await res.json()
+  } catch (err) {
+    // No server (e.g. opened as a standalone artifact) — fall back to the
+    // snapshot baked in at publish time, and say so.
+    if (window.__SEED__) BOARD = { ...window.__SEED__, stale: true }
+    else return document.getElementById('app').innerHTML =
+      `<div class="err">could not load board: ${esc(err.message)}</div>`
+  }
+  render()
+}
+boot()
+</script>
+</body>
+</html>
