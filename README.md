@@ -36,12 +36,15 @@ The project needs a `Status` single-select and a `Batch` NUMBER field.
 ## What it shows
 
 Single column. The **active queue** is defined by Status, not by position: it
-holds everything marked `Queued for Dev` or `In Progress`, plus anything moved
-to `Done` within the last 15 minutes so you see work land before it drops off.
-Each row shows its status as a pill and how long ago that status was set.
-Everything else is the **backlog**, where rows show their queue rank — except
-anything not `Todo`, which shows its status pill instead, so a `Done` item that
-aged out of the window or a `Blocked` one doesn't read as ordinary backlog.
+holds everything marked `Queued for Dev`, `In Progress` or `Blocked`, plus
+anything moved to `Done` within the last 15 minutes so you see work land before
+it drops off. Each row shows its status as a pill and how long ago it was set.
+
+The **backlog** is strictly unstarted work — `Todo` only (and items with no
+Status, so nothing silently disappears). A `Done` item whose window has expired
+shows **nowhere**: it's finished, and listing it as backlog would claim the
+opposite. `Blocked` stays in the active queue rather than dropping out, because
+it's claimed work that stalled and needs a human.
 
 Status is polled every 5s from `GET /api/status`, which fetches ids, status and
 `updatedAt` only, and is cached 3s server-side so several open tabs cost one API

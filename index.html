@@ -193,7 +193,7 @@ const API = window.__API__ ?? ''
 // The active queue is defined by Status, not by position. Anything staged or
 // running belongs there; anything just-finished lingers briefly so you can see
 // it land before it drops off.
-const QUEUE_STATUSES = ['Queued for Dev', 'In Progress']
+const QUEUE_STATUSES = ['Queued for Dev', 'In Progress', 'Blocked']
 const DONE_WINDOW_MS = 15 * 60 * 1000
 const POLL_MS = 5000
 const NEW_TASK_REPO = window.__REPO__ ?? 'freeflow-community/flow'
@@ -274,7 +274,10 @@ const inQueue = (it) => QUEUE_STATUSES.includes(it.status) || doneRecently(it)
 function partition() {
   return {
     queue: BOARD.items.filter(inQueue),
-    backlog: BOARD.items.filter((it) => !inQueue(it)),
+    // Strictly unstarted work. An aged-out Done item shows nowhere — it is
+    // finished, and listing it as backlog would claim otherwise. Items with no
+    // Status at all are treated as Todo so nothing silently disappears.
+    backlog: BOARD.items.filter((it) => !inQueue(it) && (it.status === 'Todo' || it.status == null)),
   }
 }
 
@@ -311,8 +314,7 @@ function rowHTML(it, rank, { inQ = false, movable = false, first = false, last =
   return `<div class="row${it.status === 'In Progress' ? ' is-active' : ''}${open ? ' open' : ''}${doneRecently(it) ? ' is-done' : ''}${picked ? ' picked' : ''}" data-num="${it.number}" style="${edge}">
       <div class="pick-cell">${inQ && !BOARD.stale
         ? `<input type="checkbox" class="pick" data-pick="${esc(it.id)}"${picked ? ' checked' : ''}>` : ''}</div>
-      <div class="rank">${pill && (inQ || it.status !== 'Todo')
-        ? `<span class="pill${pill.cls}">${pill.text}</span>` : esc(rank)}</div>
+      <div class="rank">${inQ && pill ? `<span class="pill${pill.cls}">${pill.text}</span>` : esc(rank)}</div>
       <div class="title">${esc(it.title)}</div>
       <div class="age">${esc(when)}</div>
       ${mv}
