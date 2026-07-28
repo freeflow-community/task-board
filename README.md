@@ -67,13 +67,16 @@ replying; creating therefore takes ~5-8s, spent on the Create button.
 ### Batches
 
 Two or more tasks that belong in one branch and one PR are **linked** into a
-batch: tick their checkboxes in the backlog and press **Link**. They get a
+batch: tick their checkboxes **in the active queue** and press **Link** — the
+batch is a decision about what to work on next, so it's made where you're
+looking at what's queued. They get a
 shared `Batch` number (a NUMBER field on the project), a coloured left edge and
 a `B<n>` chip, and are pulled adjacent in the queue order so a batch reads as
 one block. **Unlink** clears it.
 
 Queueing or cancelling any member moves the whole batch — half a batch in the
-queue would misrepresent the work to the agent.
+queue would misrepresent the work to the agent. The `Batch` value survives a
+cancel, so a batch sent back to the backlog stays intact and re-queues as one.
 
 **The agent's contract:** group project items by `Batch` where
 `Status = "Queued for Dev"`. Each group is one job — one branch, one PR closing
