@@ -120,8 +120,16 @@ async function move(itemId, direction) {
   return { moved: true }
 }
 
+// Open CORS so the board can be embedded from elsewhere (a Flow artifact, a
+// docs page) rather than only from the origin serving index.html.
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-headers': 'content-type',
+}
+
 const send = (res, code, body, type) => {
-  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' })
+  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...CORS })
   res.end(body)
 }
 
@@ -139,6 +147,10 @@ const readBody = (req) =>
 createServer(async (req, res) => {
   const path = new URL(req.url, 'http://localhost').pathname
   try {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, CORS)
+      return res.end()
+    }
     if (path === '/api/board') {
       return send(res, 200, JSON.stringify(await board()), 'application/json')
     }
