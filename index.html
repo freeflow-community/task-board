@@ -112,6 +112,7 @@
   .pill.todo { background: #e7e9ec; color: #6b7079; }
   .pill.queued { background: #d98324; }
   .pill.done { background: #2e9e5b; }
+  .pill.blocked { background: #b3261e; }
   .cancel {
     font: 9.5px var(--mono); color: var(--muted); text-decoration: none;
     border-bottom: 1px dotted currentColor; margin-left: 7px;
@@ -201,6 +202,7 @@ const STATUS_PILL = {
   'Queued for Dev': { cls: ' queued', text: 'QUE' }, // 22px rank column won't take the full word
   'In Progress': { cls: '', text: 'RUN' },
   'Done': { cls: ' done', text: 'DONE' },
+  'Blocked': { cls: ' blocked', text: 'BLK' },
   'Todo': { cls: ' todo', text: 'TODO' },
 }
 
@@ -309,7 +311,8 @@ function rowHTML(it, rank, { inQ = false, movable = false, first = false, last =
   return `<div class="row${it.status === 'In Progress' ? ' is-active' : ''}${open ? ' open' : ''}${doneRecently(it) ? ' is-done' : ''}${picked ? ' picked' : ''}" data-num="${it.number}" style="${edge}">
       <div class="pick-cell">${inQ && !BOARD.stale
         ? `<input type="checkbox" class="pick" data-pick="${esc(it.id)}"${picked ? ' checked' : ''}>` : ''}</div>
-      <div class="rank">${inQ && pill ? `<span class="pill${pill.cls}">${pill.text}</span>` : esc(rank)}</div>
+      <div class="rank">${pill && (inQ || it.status !== 'Todo')
+        ? `<span class="pill${pill.cls}">${pill.text}</span>` : esc(rank)}</div>
       <div class="title">${esc(it.title)}</div>
       <div class="age">${esc(when)}</div>
       ${mv}
