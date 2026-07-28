@@ -32,9 +32,19 @@ gh auth login --web --scopes 'repo,read:org,workflow,project'
 
 ## What it shows
 
-Single column. The **active queue** is the top 3 items in board order, with
-anything marked `In Progress` floated to the top and badged `RUN`. Everything
-below is the **backlog**, with search and a status filter.
+Single column. The **active queue** is the top 3 items in board order; each row
+shows its own Status as a pill — `TODO`, `RUN` (In Progress) or `DONE`.
+Everything below is the **backlog**, with search and a status filter.
+
+Status is polled every 5s from `GET /api/status`, which fetches ids and status
+only and is cached 3s server-side so several open tabs cost one API call. The
+poll patches status in place and never touches order, so it can't fight an
+unsaved local reorder, and it only re-renders when something actually changed.
+
+Queue rows whose status is `Todo` carry a **cancel** link that swaps the item
+with the top backlog item — the queue stays full and the demoted task keeps the
+front of the backlog. Only `Todo` can be cancelled: once an agent has started
+or finished a task, pulling it out from under them isn't a UI decision.
 
 Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons —
 moving an item up out of the backlog promotes it into the active queue.
@@ -63,6 +73,7 @@ filtered list would move an item relative to rows you can't see.
   has a source. GitHub Projects is the wrong place to write ticking state; that
   belongs to whatever actually runs the agent.
 - **Drag and drop.** ▲/▼ only; one slot per click.
+- **Setting status.** The board reads status; it never writes it. Agents do.
 - **Other writes.** No status changes, no claiming, no editing.
 - **Draft items and PRs** are filtered out; only issues render.
 - **Markdown** in issue bodies is rendered by ~6 lines of regex — fences,

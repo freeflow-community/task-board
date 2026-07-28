@@ -91,6 +91,38 @@ async function board({ fresh = false } = {}) {
   return data
 }
 
+// Status moves independently of the board (an agent picks a task up, finishes
+// it), so the UI polls for it. This query deliberately fetches nothing but id
+// and status — no bodies, labels or assignees — because it runs every few
+// seconds per open tab.
+const STATUS_QUERY = `
+query($owner:String!, $number:Int!) {
+  organization(login:$owner) {
+    projectV2(number:$number) {
+      items(first:100) {
+        nodes {
+          id
+          fieldValueByName(name:"Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+        }
+      }
+    }
+  }
+}`
+
+let statusCache = { at: 0, data: null }
+const STATUS_TTL_MS = 3_000 // collapses several open tabs into one API call
+
+async function statuses() {
+  if (statusCache.data && Date.now() - statusCache.at < STATUS_TTL_MS) return statusCache.data
+  const res = await gh(['api', 'graphql', '-F', `owner=${OWNER}`, '-F', `number=${NUMBER}`, '-f', `query=${STATUS_QUERY}`])
+  const nodes = res.data?.organization?.projectV2?.items?.nodes ?? []
+  const data = Object.fromEntries(nodes.map((n) => [n.id, n.fieldValueByName?.name ?? null]))
+  statusCache = { at: Date.now(), data }
+  return data
+}
+
 // Place one item directly after another (or at the top when `after` is null).
 async function position(projectId, itemId, after) {
   const mutation = after
@@ -168,6 +200,9 @@ createServer(async (req, res) => {
     }
     if (path === '/api/board') {
       return send(res, 200, JSON.stringify(await board()), 'application/json')
+    }
+    if (path === '/api/status') {
+      return send(res, 200, JSON.stringify(await statuses()), 'application/json')
     }
     if (path === '/api/reorder' && req.method === 'POST') {
       const { order } = JSON.parse(await readBody(req))
