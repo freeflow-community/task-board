@@ -32,11 +32,20 @@ gh auth login --web --scopes 'repo,read:org,workflow,project'
 
 ## What it shows
 
-Left pane is the backlog in board order, with search and a status filter. Right
-pane maps onto the same data: whatever item has Status `In Progress` renders as
-ACTIVE, and the next four in queue order are UP NEXT.
+Single column. The **active queue** is the top 3 items in board order, with
+anything marked `In Progress` floated to the top and badged `RUN`. Everything
+below is the **backlog**, with search and a status filter.
 
-Responses are cached for 20s so a reload doesn't re-hit the API.
+Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons
+that reorder the item on the real project via `updateProjectV2ItemPosition` —
+moving an item up out of the backlog promotes it into the active queue.
+
+Reads are cached for 20s. A reorder computes its new neighbour from a freshly
+fetched order, so a stale tab can't reorder against a board that has since
+changed, and it busts the cache on success.
+
+Reordering is hidden while a search or status filter is active — ▲/▼ on a
+filtered list would move an item relative to rows you can't see.
 
 ## Not built yet
 
@@ -45,5 +54,8 @@ Responses are cached for 20s so a reload doesn't re-hit the API.
 - **Live progress.** Elapsed time, a progress bar, `14/22 passing` — none of it
   has a source. GitHub Projects is the wrong place to write ticking state; that
   belongs to whatever actually runs the agent.
-- **Writes.** Read-only. No reordering, no status changes, no claiming.
+- **Drag and drop.** ▲/▼ only; one slot per click.
+- **Other writes.** No status changes, no claiming, no editing.
 - **Draft items and PRs** are filtered out; only issues render.
+- **Markdown** in issue bodies is rendered by ~6 lines of regex — fences,
+  inline code, bold, links, headings. Tables and nested lists come out flat.

@@ -54,20 +54,46 @@
   select { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: none; }
 
   .row {
-    display: grid; grid-template-columns: 22px 1fr auto; gap: 1px 8px;
+    display: grid; grid-template-columns: 22px 1fr auto auto; gap: 1px 8px;
     padding: 7px 13px; border-bottom: 1px solid var(--line); cursor: pointer;
+    align-items: start;
   }
   .row:hover { background: #fafbfc; }
+  .row.open { background: #f7f8fa; }
   .rank { grid-row: span 2; font: 10px var(--mono); color: var(--muted); padding-top: 2px; }
   .title {
     font-size: 12.5px; font-weight: 500; line-height: 1.35;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .row.open .title { white-space: normal; }
   .age { font: 10px var(--mono); color: var(--muted); text-align: right; padding-top: 1px; }
   .meta {
-    grid-column: 2 / 4; font: 10px var(--mono); color: var(--muted);
+    grid-column: 2 / 5; font: 10px var(--mono); color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .mv { grid-row: span 2; display: flex; gap: 2px; align-self: center; }
+  .mv button {
+    width: 19px; height: 19px; padding: 0; line-height: 1;
+    border: 1px solid var(--line); border-radius: 4px; background: #fff;
+    color: var(--muted); font-size: 9px; cursor: pointer;
+  }
+  .mv button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .mv button:disabled { opacity: .3; cursor: default; }
+
+  /* Expanded issue body */
+  .body {
+    padding: 11px 13px 13px 35px; border-bottom: 1px solid var(--line);
+    background: #f7f8fa; font-size: 12px; line-height: 1.5;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .body pre {
+    margin: 7px 0; padding: 8px 9px; background: #eceef1; border-radius: 5px;
+    font: 11px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .body code { font: 11px var(--mono); background: #eceef1; padding: 1px 3px; border-radius: 3px; }
+  .body a { color: var(--accent); }
+  .body .none { color: var(--muted); font-style: italic; }
+  .body .open-gh { display: inline-block; margin-top: 9px; font: 10px var(--mono); color: var(--muted); }
 
   /* Active queue — same row shape as the backlog, tinted so the split reads
      without adding a heavier container. */
@@ -97,6 +123,19 @@ const QUEUE_SIZE = 3
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 
+// Deliberately tiny markdown: enough for issue bodies (fences, inline code,
+// bold, links, headings) without pulling in a dependency.
+function md(src) {
+  const fences = []
+  let s = esc(src)
+    .replace(/```[\w-]*\n([\s\S]*?)```/g, (_, code) => '\u0000' + (fences.push(code) - 1) + '\u0000')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>')
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre>${fences[i]}</pre>`)
+}
+
 function age(iso) {
   const d = Math.floor((Date.now() - new Date(iso)) / 86400000)
   return d < 1 ? 'today' : d + 'd'
@@ -109,17 +148,30 @@ function metaLine(it) {
   return bits.join(' · ')
 }
 
-function rowHTML(it, rank, isActive) {
-  return `<div class="row${isActive ? ' is-active' : ''}" data-url="${esc(it.url)}" title="${esc(it.title)}">
-    <div class="rank">${isActive ? '<span class="pill">RUN</span>' : esc(rank)}</div>
-    <div class="title">${esc(it.title)}</div>
-    <div class="age">${esc(age(it.createdAt))}</div>
-    <div class="meta">${esc(metaLine(it))}</div>
-  </div>`
-}
-
 let BOARD = null
 let filter = { q: '', status: 'all' }
+const expanded = new Set() // issue numbers, kept across re-renders
+let busy = false
+
+function rowHTML(it, rank, { isActive = false, movable = false, first = false, last = false } = {}) {
+  const open = expanded.has(it.number)
+  const mv = movable
+    ? `<div class="mv">
+         <button data-move="up" data-id="${esc(it.id)}" ${first || BOARD.stale ? 'disabled' : ''} title="Move up">▲</button>
+         <button data-move="down" data-id="${esc(it.id)}" ${last || BOARD.stale ? 'disabled' : ''} title="Move down">▼</button>
+       </div>`
+    : '<div class="mv"></div>'
+
+  return `<div class="row${isActive ? ' is-active' : ''}${open ? ' open' : ''}" data-num="${it.number}">
+      <div class="rank">${isActive ? '<span class="pill">RUN</span>' : esc(rank)}</div>
+      <div class="title">${esc(it.title)}</div>
+      <div class="age">${esc(age(it.createdAt))}</div>
+      ${mv}
+      <div class="meta">${esc(metaLine(it))}</div>
+    </div>
+    ${open ? `<div class="body">${it.body.trim() ? md(it.body) : '<span class="none">No description.</span>'}
+      <a class="open-gh" href="${esc(it.url)}" target="_blank" rel="noopener">open #${it.number} on GitHub →</a></div>` : ''}`
+}
 
 function matches(it) {
   const q = filter.q.toLowerCase()
@@ -137,6 +189,7 @@ function render() {
   const queued = new Set(queue.map((it) => it.number))
   const backlog = BOARD.items.filter((it) => !queued.has(it.number) && matches(it))
   const statuses = [...new Set(BOARD.items.map((it) => it.status ?? '—'))]
+  const reorderable = !filter.q && filter.status === 'all'
 
   const app = document.getElementById('app')
   app.innerHTML = `
@@ -146,7 +199,7 @@ function render() {
       <span class="sub">${esc(BOARD.title)}</span>
       <a href="${esc(BOARD.url)}" target="_blank">GitHub →</a>
     </header>
-    ${BOARD.stale ? `<div class="banner">snapshot — no live server reachable</div>` : ''}
+    ${BOARD.stale ? `<div class="banner">snapshot — no live server, reordering disabled</div>` : ''}
 
     <section class="queue">
       <div class="bar">
@@ -154,7 +207,7 @@ function render() {
         <span class="count">${queue.length} of ${QUEUE_SIZE}</span>
       </div>
       ${queue.length
-        ? queue.map((it, i) => rowHTML(it, i + 1, it.status === 'In Progress')).join('')
+        ? queue.map((it, i) => rowHTML(it, i + 1, { isActive: it.status === 'In Progress' })).join('')
         : '<div class="empty">Queue is empty<div class="hint">nothing on the board</div></div>'}
     </section>
 
@@ -162,6 +215,7 @@ function render() {
       <div class="bar">
         <span class="label">Backlog</span>
         <span class="count">${backlog.length} unscheduled</span>
+        ${reorderable ? '' : '<span class="count">· reorder needs an unfiltered list</span>'}
       </div>
       <div class="controls">
         <input id="q" placeholder="Search" value="${esc(filter.q)}">
@@ -170,31 +224,65 @@ function render() {
           ${statuses.map((s) => `<option value="${esc(s)}"${s === filter.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
         </select>
       </div>
-      <div id="list">${backlog.map((it, i) => rowHTML(it, QUEUE_SIZE + i + 1, false)).join('')
-        || '<div class="empty">nothing matches</div>'}</div>
+      <div id="list">${backlog.map((it, i) => rowHTML(it, QUEUE_SIZE + i + 1, {
+        movable: reorderable, first: i === 0, last: i === backlog.length - 1,
+      })).join('') || '<div class="empty">nothing matches</div>'}</div>
     </section>`
 
   app.querySelectorAll('.row').forEach((r) =>
-    r.addEventListener('click', () => window.open(r.dataset.url, '_blank')))
+    r.addEventListener('click', () => {
+      const n = Number(r.dataset.num)
+      expanded.has(n) ? expanded.delete(n) : expanded.add(n)
+      render()
+    }))
+
+  app.querySelectorAll('[data-move]').forEach((b) =>
+    b.addEventListener('click', (e) => {
+      e.stopPropagation() // don't also toggle the row open
+      move(b.dataset.id, b.dataset.move)
+    }))
 
   const q = document.getElementById('q')
   q.addEventListener('input', (e) => { filter.q = e.target.value; render(); document.getElementById('q').focus() })
   document.getElementById('status').addEventListener('change', (e) => { filter.status = e.target.value; render() })
 }
 
+async function move(itemId, direction) {
+  if (busy) return
+  busy = true
+  try {
+    const res = await fetch('/api/move', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ itemId, direction }),
+    })
+    const out = await res.json()
+    if (!res.ok) throw new Error(out.error ?? res.statusText)
+    if (out.moved) await load()
+  } catch (err) {
+    alert('could not reorder: ' + err.message)
+  } finally {
+    busy = false
+  }
+}
+
+async function load() {
+  const res = await fetch('/api/board')
+  if (!res.ok) throw new Error((await res.json()).error ?? res.statusText)
+  BOARD = await res.json()
+  render()
+}
+
 async function boot() {
   try {
-    const res = await fetch('/api/board')
-    if (!res.ok) throw new Error((await res.json()).error ?? res.statusText)
-    BOARD = await res.json()
+    await load()
   } catch (err) {
     // No server (e.g. opened as a standalone artifact) — fall back to the
     // snapshot baked in at publish time, and say so.
-    if (window.__SEED__) BOARD = { ...window.__SEED__, stale: true }
-    else return document.getElementById('app').innerHTML =
+    if (window.__SEED__) { BOARD = { ...window.__SEED__, stale: true }; render() }
+    else document.getElementById('app').innerHTML =
       `<div class="err">could not load board: ${esc(err.message)}</div>`
   }
-  render()
 }
 boot()
 </script>
