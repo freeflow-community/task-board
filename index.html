@@ -44,6 +44,9 @@
   }
   .bar .label { font: 10px var(--mono); letter-spacing: .09em; color: var(--muted); text-transform: uppercase; }
   .bar .count { font: 10px var(--mono); color: var(--muted); }
+  .bar .sync.pending { color: #a8791a; }
+  .bar .sync.syncing { color: var(--accent); }
+  .bar .sync.error { color: #b3261e; font-weight: 600; }
   .controls { display: flex; gap: 6px; padding: 8px 13px; border-bottom: 1px solid var(--line); }
   input, select {
     font: 12px inherit; padding: 4px 7px; border: 1px solid var(--line);
@@ -154,7 +157,6 @@ function metaLine(it) {
 let BOARD = null
 let filter = { q: '', status: 'all' }
 const expanded = new Set() // issue numbers, kept across re-renders
-let busy = false
 
 function rowHTML(it, rank, { isActive = false, movable = false, first = false, last = false } = {}) {
   const open = expanded.has(it.number)
@@ -219,6 +221,7 @@ function render() {
         <span class="label">Backlog</span>
         <span class="count">${backlog.length} unscheduled</span>
         ${reorderable ? '' : '<span class="count">· reorder needs an unfiltered list</span>'}
+        ${SYNC_LABEL[syncState] ? `<span class="count sync ${syncState}">· ${SYNC_LABEL[syncState]}</span>` : ''}
       </div>
       <div class="controls">
         <input id="q" placeholder="Search" value="${esc(filter.q)}">
@@ -242,7 +245,7 @@ function render() {
   app.querySelectorAll('[data-move]').forEach((b) =>
     b.addEventListener('click', (e) => {
       e.stopPropagation() // don't also toggle the row open
-      move(b.dataset.id, b.dataset.move)
+      moveLocal(b.dataset.id, b.dataset.move)
     }))
 
   const q = document.getElementById('q')
@@ -250,22 +253,47 @@ function render() {
   document.getElementById('status').addEventListener('change', (e) => { filter.status = e.target.value; render() })
 }
 
-async function move(itemId, direction) {
-  if (busy) return
-  busy = true
+// Reordering is applied locally and rendered immediately; the board is pushed
+// to GitHub once the user stops clicking. A single ▲ round-trips in ~2.5s,
+// which is far too slow to sit behind a button press.
+const SYNC_LABEL = { pending: 'unsaved', syncing: 'saving\u2026', error: 'save failed' }
+const SYNC_DELAY_MS = 700
+let syncTimer = null
+let syncState = 'idle' // idle | pending | syncing | error
+
+function moveLocal(itemId, direction) {
+  const items = BOARD.items
+  const i = items.findIndex((it) => it.id === itemId)
+  const to = direction === 'up' ? i - 1 : i + 1
+  if (i < 0 || to < 0 || to >= items.length) return
+
+  ;[items[i], items[to]] = [items[to], items[i]]
+  syncState = 'pending'
+  render()
+
+  clearTimeout(syncTimer)
+  syncTimer = setTimeout(sync, SYNC_DELAY_MS)
+}
+
+async function sync() {
+  syncState = 'syncing'
+  render()
+  const order = BOARD.items.map((it) => it.id)
   try {
-    const res = await fetch(API + '/api/move', {
+    const res = await fetch(API + '/api/reorder', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ itemId, direction }),
+      body: JSON.stringify({ order }),
     })
     const out = await res.json()
     if (!res.ok) throw new Error(out.error ?? res.statusText)
-    if (out.moved) await load()
+    syncState = 'idle'
+    render()
   } catch (err) {
-    alert('could not reorder: ' + err.message)
-  } finally {
-    busy = false
+    // Don't leave the UI showing an order GitHub never accepted.
+    syncState = 'error'
+    alert('could not save the new order: ' + err.message + '\n\nReloading the board.')
+    await load()
   }
 }
 

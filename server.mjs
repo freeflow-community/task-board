@@ -91,21 +91,8 @@ async function board({ fresh = false } = {}) {
   return data
 }
 
-// Move one item up or down a single slot. The new neighbour is computed from a
-// freshly-fetched order rather than from whatever the client last rendered, so
-// a stale tab can't reorder against a board that has since changed.
-async function move(itemId, direction) {
-  const { projectId, items } = await board({ fresh: true })
-  const i = items.findIndex((it) => it.id === itemId)
-  if (i < 0) throw new Error('item is no longer on the board')
-
-  const to = direction === 'up' ? i - 1 : i + 1
-  if (to < 0 || to >= items.length) return { moved: false, reason: 'already at the end' }
-
-  // afterId is whichever item ends up directly above this one. Omitting it
-  // entirely means "move to the top".
-  const after = direction === 'up' ? items[i - 2]?.id : items[i + 1].id
-
+// Place one item directly after another (or at the top when `after` is null).
+async function position(projectId, itemId, after) {
   const mutation = after
     ? `mutation($p:ID!,$i:ID!,$a:ID!){updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i,afterId:$a}){clientMutationId}}`
     : `mutation($p:ID!,$i:ID!){updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i}){clientMutationId}}`
@@ -115,9 +102,37 @@ async function move(itemId, direction) {
 
   const res = await gh(args)
   if (res.errors?.length) throw new Error(res.errors[0].message)
+}
+
+// Reconcile the board against a desired order. The client reorders optimistically
+// and sends the whole resulting order once the user stops clicking, so a run of
+// ten ▲ clicks costs one fetch and one mutation instead of ten round trips.
+//
+// Only positions that actually differ are mutated, and the desired order is
+// intersected with a freshly-fetched board — items added or removed elsewhere
+// since the client last loaded are preserved rather than dropped.
+async function reorder(desired) {
+  const { projectId, items } = await board({ fresh: true })
+  const current = items.map((it) => it.id)
+  const known = new Set(current)
+
+  const target = desired.filter((id) => known.has(id))
+  const wanted = new Set(target)
+  for (const id of current) if (!wanted.has(id)) target.push(id) // unknown to the client → keep at the end
+
+  const working = [...current]
+  let mutations = 0
+  for (let i = 0; i < target.length; i++) {
+    if (working[i] === target[i]) continue
+    const id = target[i]
+    working.splice(working.indexOf(id), 1)
+    working.splice(i, 0, id)
+    await position(projectId, id, i === 0 ? null : target[i - 1])
+    mutations++
+  }
 
   cache = { at: 0, data: null } // force a refetch on the next read
-  return { moved: true }
+  return { mutations, order: working }
 }
 
 // Open CORS so the board can be embedded from elsewhere (a Flow artifact, a
@@ -154,10 +169,10 @@ createServer(async (req, res) => {
     if (path === '/api/board') {
       return send(res, 200, JSON.stringify(await board()), 'application/json')
     }
-    if (path === '/api/move' && req.method === 'POST') {
-      const { itemId, direction } = JSON.parse(await readBody(req))
-      if (!itemId || !['up', 'down'].includes(direction)) throw new Error('need itemId and direction up|down')
-      return send(res, 200, JSON.stringify(await move(itemId, direction)), 'application/json')
+    if (path === '/api/reorder' && req.method === 'POST') {
+      const { order } = JSON.parse(await readBody(req))
+      if (!Array.isArray(order) || !order.length) throw new Error('need a non-empty order array of item ids')
+      return send(res, 200, JSON.stringify(await reorder(order)), 'application/json')
     }
     if (path === '/' || path === '/index.html') {
       return send(res, 200, await readFile(join(here, 'index.html')), 'text/html; charset=utf-8')

@@ -36,13 +36,21 @@ Single column. The **active queue** is the top 3 items in board order, with
 anything marked `In Progress` floated to the top and badged `RUN`. Everything
 below is the **backlog**, with search and a status filter.
 
-Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons
-that reorder the item on the real project via `updateProjectV2ItemPosition` —
+Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons —
 moving an item up out of the backlog promotes it into the active queue.
 
-Reads are cached for 20s. A reorder computes its new neighbour from a freshly
-fetched order, so a stale tab can't reorder against a board that has since
-changed, and it busts the cache on success.
+Reordering is **optimistic**: the click reorders locally and renders at once,
+and the whole resulting order is pushed to GitHub 700ms after the last click.
+A round trip costs ~2.5s, far too slow to sit behind a button press, and a run
+of clicks now costs one request instead of one each. The backlog bar shows
+`unsaved` → `saving…`, and a failed save reloads from GitHub rather than
+leaving the UI showing an order that was never accepted.
+
+`POST /api/reorder` reconciles a desired order against a freshly-fetched board:
+only positions that actually differ are mutated, and items the client didn't
+know about are preserved rather than dropped.
+
+Reads are cached for 20s; a successful reorder busts the cache.
 
 Reordering is hidden while a search or status filter is active — ▲/▼ on a
 filtered list would move an item relative to rows you can't see.
