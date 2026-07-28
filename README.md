@@ -45,10 +45,11 @@ fight an unsaved local reorder. It re-renders only when queue membership or a
 status actually changed — which also covers a `Done` item ageing out of the
 window without anything else having changed.
 
-Queue rows with status `Queued for Dev` carry a **cancel** link that sets the
-status back to `Todo` via `POST /api/set-status`, dropping it out of the queue.
-Only staged tasks can be cancelled: once an agent has started or finished one,
-pulling it out from under them isn't a UI decision.
+Backlog rows carry a **queue** button that sets `Queued for Dev`; queue rows
+still marked `Queued for Dev` carry a **cancel** link that sets `Todo` again.
+Both go through `POST /api/set-status` and are applied optimistically, reverting
+if GitHub rejects the write. Only staged tasks can be cancelled: once an agent
+has started or finished one, pulling it out from under them isn't a UI decision.
 
 Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons —
 moving an item up out of the backlog promotes it into the active queue.
@@ -77,9 +78,6 @@ filtered list would move an item relative to rows you can't see.
   has a source. GitHub Projects is the wrong place to write ticking state; that
   belongs to whatever actually runs the agent.
 - **Drag and drop.** ▲/▼ only; one slot per click.
-- **Promoting into the queue.** Cancel writes status; nothing writes it the
-  other way, so a task enters the queue only when an agent or the GitHub UI
-  sets `Queued for Dev`.
 - **Other writes.** No claiming, no editing, no assignment.
 - **Draft items and PRs** are filtered out; only issues render.
 - **Markdown** in issue bodies is rendered by ~6 lines of regex — fences,
