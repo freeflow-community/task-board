@@ -48,7 +48,10 @@ window without anything else having changed.
 Backlog rows carry a **queue** button that sets `Queued for Dev`; queue rows
 still marked `Queued for Dev` carry a **cancel** link that sets `Todo` again.
 Both go through `POST /api/set-status` and are applied optimistically, reverting
-if GitHub rejects the write. Only staged tasks can be cancelled: once an agent
+if GitHub rejects the write. A written status is held against the poll until the
+server reports the same value (or 30s passes) — otherwise a poll that started
+before the write, or one reading the 3s status cache, returns the pre-click
+value and snaps the row back. Only staged tasks can be cancelled: once an agent
 has started or finished one, pulling it out from under them isn't a UI decision.
 
 Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons —
