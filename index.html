@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Task board</title>
 <style>
-  /* Tuned for a ~800px-wide embed. Everything is sized down from the
-     comfortable desktop default; the two panes stack below 680px. */
+  /* Tuned for a ~800px-wide embed: single column, active queue on top. */
   :root {
     --bg: #f0f1f3;
     --card: #ffffff;
@@ -39,10 +38,6 @@
   header a { margin-left: auto; font-size: 11px; color: var(--muted); text-decoration: none; flex: none; }
   header a:hover { color: var(--accent); }
 
-  .cols { display: grid; grid-template-columns: 1.35fr 1fr; min-height: 380px; }
-  .left { border-right: 1px solid var(--line); min-width: 0; }
-  .right { display: flex; flex-direction: column; min-width: 0; }
-
   .bar {
     display: flex; align-items: baseline; gap: 7px;
     padding: 7px 13px; border-bottom: 1px solid var(--line); background: #fafbfc;
@@ -74,38 +69,37 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  .active { padding: 11px 13px; border-bottom: 1px solid var(--line); }
+  /* Active queue — same row shape as the backlog, tinted so the split reads
+     without adding a heavier container. */
+  .queue { background: #fbfcfe; }
+  .queue .bar { background: #f4f7fd; }
+  .queue .row.is-active { background: #f7faff; }
+  .queue .row.is-active .title { font-weight: 600; }
   .pill {
-    display: inline-block; padding: 2px 6px; border-radius: 4px; background: var(--accent);
-    color: #fff; font: 9.5px var(--mono); letter-spacing: .06em; font-weight: 600;
+    display: inline-block; padding: 1px 5px; border-radius: 3px; background: var(--accent);
+    color: #fff; font: 9px var(--mono); letter-spacing: .06em; font-weight: 600;
   }
-  .active .head { display: flex; align-items: center; gap: 7px; }
-  .active h2 { font-size: 13.5px; font-weight: 600; margin: 8px 0 0; letter-spacing: -.1px; line-height: 1.35; }
-  .empty { padding: 24px 13px; text-align: center; color: var(--muted); font-size: 12px; }
-  .empty .hint { font: 10px var(--mono); margin-top: 5px; opacity: .8; }
 
+  .empty { padding: 18px 13px; text-align: center; color: var(--muted); font-size: 12px; }
+  .empty .hint { font: 10px var(--mono); margin-top: 5px; opacity: .8; }
   .banner {
     padding: 6px 13px; background: #fff8e6; border-bottom: 1px solid #f0e2b8;
     font: 10px var(--mono); color: #7a5c12;
   }
   .err { padding: 14px; color: #b3261e; font: 11px var(--mono); }
-
-  @media (max-width: 680px) {
-    .cols { grid-template-columns: 1fr; }
-    .left { border-right: none; border-bottom: 1px solid var(--line); }
-  }
 </style>
 </head>
 <body>
 <div class="app" id="app"><div class="empty">loading…</div></div>
 
 <script>
+const QUEUE_SIZE = 3
+
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 
 function age(iso) {
   const d = Math.floor((Date.now() - new Date(iso)) / 86400000)
-  if (d < 1) return 'today'
-  return d + 'd'
+  return d < 1 ? 'today' : d + 'd'
 }
 
 function metaLine(it) {
@@ -115,9 +109,9 @@ function metaLine(it) {
   return bits.join(' · ')
 }
 
-function rowHTML(it, rank) {
-  return `<div class="row" data-url="${esc(it.url)}" title="${esc(it.title)}">
-    <div class="rank">${esc(rank)}</div>
+function rowHTML(it, rank, isActive) {
+  return `<div class="row${isActive ? ' is-active' : ''}" data-url="${esc(it.url)}" title="${esc(it.title)}">
+    <div class="rank">${isActive ? '<span class="pill">RUN</span>' : esc(rank)}</div>
     <div class="title">${esc(it.title)}</div>
     <div class="age">${esc(age(it.createdAt))}</div>
     <div class="meta">${esc(metaLine(it))}</div>
@@ -127,20 +121,21 @@ function rowHTML(it, rank) {
 let BOARD = null
 let filter = { q: '', status: 'all' }
 
-function visible() {
+function matches(it) {
   const q = filter.q.toLowerCase()
-  return BOARD.items.filter((it) => {
-    if (filter.status !== 'all' && (it.status ?? '—') !== filter.status) return false
-    if (!q) return true
-    return (it.title + ' ' + metaLine(it)).toLowerCase().includes(q)
-  })
+  if (filter.status !== 'all' && (it.status ?? '—') !== filter.status) return false
+  if (!q) return true
+  return (it.title + ' ' + metaLine(it)).toLowerCase().includes(q)
 }
 
 function render() {
-  const items = visible()
-  // Board order is the queue: whatever is In Progress is running, the rest wait.
-  const active = items.find((it) => it.status === 'In Progress') ?? null
-  const queue = items.filter((it) => it !== active)
+  // The queue is taken off the unfiltered board — searching the backlog
+  // shouldn't make the running task disappear.
+  const ordered = [...BOARD.items].sort(
+    (a, b) => (b.status === 'In Progress') - (a.status === 'In Progress'))
+  const queue = ordered.slice(0, QUEUE_SIZE)
+  const queued = new Set(queue.map((it) => it.number))
+  const backlog = BOARD.items.filter((it) => !queued.has(it.number) && matches(it))
   const statuses = [...new Set(BOARD.items.map((it) => it.status ?? '—'))]
 
   const app = document.getElementById('app')
@@ -152,32 +147,32 @@ function render() {
       <a href="${esc(BOARD.url)}" target="_blank">GitHub →</a>
     </header>
     ${BOARD.stale ? `<div class="banner">snapshot — no live server reachable</div>` : ''}
-    <div class="cols">
-      <div class="left">
-        <div class="bar">
-          <span class="label">Backlog</span>
-          <span class="count">${queue.length} unscheduled</span>
-        </div>
-        <div class="controls">
-          <input id="q" placeholder="Search" value="${esc(filter.q)}">
-          <select id="status">
-            <option value="all">All</option>
-            ${statuses.map((s) => `<option value="${esc(s)}"${s === filter.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
-          </select>
-        </div>
-        <div id="list">${queue.map((it, i) => rowHTML(it, i + 1)).join('') || '<div class="empty">nothing matches</div>'}</div>
+
+    <section class="queue">
+      <div class="bar">
+        <span class="label">Active queue</span>
+        <span class="count">${queue.length} of ${QUEUE_SIZE}</span>
       </div>
-      <div class="right">
-        <div class="active">
-          ${active ? `
-            <div class="head"><span class="pill">ACTIVE</span><span class="sub">#${active.number}</span></div>
-            <h2>${esc(active.title)}</h2>
-          ` : `<div class="empty">No active task<div class="hint">nothing is In Progress</div></div>`}
-        </div>
-        <div class="bar"><span class="label">Up next</span><span class="count">${Math.min(4, queue.length)}</span></div>
-        <div class="next">${queue.slice(0, 4).map((it, i) => rowHTML(it, i + 1)).join('') || '<div class="empty">queue is empty</div>'}</div>
+      ${queue.length
+        ? queue.map((it, i) => rowHTML(it, i + 1, it.status === 'In Progress')).join('')
+        : '<div class="empty">Queue is empty<div class="hint">nothing on the board</div></div>'}
+    </section>
+
+    <section class="backlog">
+      <div class="bar">
+        <span class="label">Backlog</span>
+        <span class="count">${backlog.length} unscheduled</span>
       </div>
-    </div>`
+      <div class="controls">
+        <input id="q" placeholder="Search" value="${esc(filter.q)}">
+        <select id="status">
+          <option value="all">All</option>
+          ${statuses.map((s) => `<option value="${esc(s)}"${s === filter.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div id="list">${backlog.map((it, i) => rowHTML(it, QUEUE_SIZE + i + 1, false)).join('')
+        || '<div class="empty">nothing matches</div>'}</div>
+    </section>`
 
   app.querySelectorAll('.row').forEach((r) =>
     r.addEventListener('click', () => window.open(r.dataset.url, '_blank')))
