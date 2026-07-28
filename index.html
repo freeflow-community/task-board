@@ -57,7 +57,7 @@
   select { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: none; }
 
   .row {
-    display: grid; grid-template-columns: 22px 1fr auto auto; gap: 1px 8px;
+    display: grid; grid-template-columns: 15px 22px 1fr auto auto; gap: 1px 8px;
     padding: 7px 13px; border-bottom: 1px solid var(--line); cursor: pointer;
     align-items: start;
   }
@@ -71,7 +71,7 @@
   .row.open .title { white-space: normal; }
   .age { font: 10px var(--mono); color: var(--muted); text-align: right; padding-top: 1px; }
   .meta {
-    grid-column: 2 / 5; font: 10px var(--mono); color: var(--muted);
+    grid-column: 3 / 6; font: 10px var(--mono); color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .mv { grid-row: span 2; display: flex; gap: 2px; align-self: center; }
@@ -117,6 +117,20 @@
     border-bottom: 1px dotted currentColor; margin-left: 7px;
   }
   .cancel:hover { color: #b3261e; }
+  .pick { grid-row: span 2; align-self: center; margin: 0; cursor: pointer; }
+  .pick-cell { grid-row: span 2; }
+  .row.picked { background: #eef4ff; }
+  .bchip {
+    display: inline-block; margin-left: 7px; padding: 0 4px; border-radius: 3px;
+    font: 9px var(--mono); font-weight: 600; color: #fff;
+  }
+  .seltools {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 13px; border-bottom: 1px solid var(--line); background: #eef4ff;
+  }
+  .seltools .n { font: 10px var(--mono); color: var(--accent); font-weight: 600; }
+  .seltools .grow { margin-left: auto; }
+  .seltools .note { font: 10px var(--mono); color: var(--muted); }
   .act {
     font: 9.5px var(--mono); color: var(--muted); text-decoration: none;
     margin-left: 7px; padding: 1px 6px; border: 1px solid var(--line);
@@ -234,6 +248,16 @@ let syncState = 'idle' // idle | pending | syncing | error
 // Statuses we have written but not yet seen confirmed. A poll that started
 // before the write — or that reads the server's 3s status cache — would
 // otherwise overwrite the optimistic value and snap the row back.
+const selected = new Set()   // item ids ticked for linking
+let linkBusy = ''            // label shown while a link/unlink is in flight
+
+// Batches are drawn from a small cycling palette; the number itself is shown
+// in the chip, so the colour only has to separate neighbours.
+const BATCH_COLOURS = ['#d98324', '#2b6cf6', '#2e9e5b', '#8b5cf6', '#c2405f']
+const batchColour = (b) => BATCH_COLOURS[(Math.round(b) - 1) % BATCH_COLOURS.length]
+const batchMates = (it) =>
+  it.batch == null ? [it.id] : BOARD.items.filter((x) => x.batch === it.batch).map((x) => x.id)
+
 const pendingWrites = new Map() // itemId -> { status, expires }
 const WRITE_GRACE_MS = 30_000
 
@@ -277,13 +301,19 @@ function rowHTML(it, rank, { inQ = false, movable = false, first = false, last =
     : '<div class="mv"></div>'
 
   const when = inQ && it.statusAt ? ago(it.statusAt) : age(it.createdAt)
+  const picked = selected.has(it.id)
+  const edge = it.batch != null ? `box-shadow: inset 3px 0 0 ${batchColour(it.batch)};` : ''
+  const chip = it.batch != null
+    ? `<span class="bchip" style="background:${batchColour(it.batch)}">B${Math.round(it.batch)}</span>` : ''
 
-  return `<div class="row${it.status === 'In Progress' ? ' is-active' : ''}${open ? ' open' : ''}${doneRecently(it) ? ' is-done' : ''}" data-num="${it.number}">
+  return `<div class="row${it.status === 'In Progress' ? ' is-active' : ''}${open ? ' open' : ''}${doneRecently(it) ? ' is-done' : ''}${picked ? ' picked' : ''}" data-num="${it.number}" style="${edge}">
+      <div class="pick-cell">${!inQ && !BOARD.stale
+        ? `<input type="checkbox" class="pick" data-pick="${esc(it.id)}"${picked ? ' checked' : ''}>` : ''}</div>
       <div class="rank">${inQ && pill ? `<span class="pill${pill.cls}">${pill.text}</span>` : esc(rank)}</div>
       <div class="title">${esc(it.title)}</div>
       <div class="age">${esc(when)}</div>
       ${mv}
-      <div class="meta">${esc(metaLine(it))}${cancel}${queue}</div>
+      <div class="meta">${esc(metaLine(it))}${chip}${cancel}${queue}</div>
     </div>
     ${open ? `<div class="body">${it.body.trim() ? md(it.body) : '<span class="none">No description.</span>'}
       <a class="open-gh" href="${esc(it.url)}" target="_blank" rel="noopener">open #${it.number} on GitHub →</a></div>` : ''}`
@@ -340,6 +370,14 @@ function render() {
           ${statuses.map((s) => `<option value="${esc(s)}"${s === filter.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
         </select>
       </div>
+      ${selected.size ? `<div class="seltools">
+        <span class="n">${selected.size} selected</span>
+        <span class="note">${linkBusy || (selected.size < 2 ? 'pick at least two to link' : '')}</span>
+        <span class="grow"></span>
+        <button class="btn primary" id="sel-link" ${selected.size < 2 || linkBusy ? 'disabled' : ''}>Link</button>
+        <button class="btn" id="sel-unlink" ${linkBusy || ![...selected].some((id) => BOARD.items.find((x) => x.id === id)?.batch != null) ? 'disabled' : ''}>Unlink</button>
+        <button class="btn" id="sel-clear" ${linkBusy ? 'disabled' : ''}>Clear</button>
+      </div>` : ''}
       <div id="list">${backlog.map((it, i) => rowHTML(it, i + 1, {
         movable: reorderable, first: i === 0, last: i === backlog.length - 1,
       })).join('') || '<div class="empty">nothing matches</div>'}</div>
@@ -351,6 +389,18 @@ function render() {
       expanded.has(n) ? expanded.delete(n) : expanded.add(n)
       render()
     }))
+
+  app.querySelectorAll('[data-pick]').forEach((c) =>
+    c.addEventListener('click', (e) => {
+      e.stopPropagation() // don't also toggle the row open
+      const id = c.dataset.pick
+      selected.has(id) ? selected.delete(id) : selected.add(id)
+      render()
+    }))
+
+  document.getElementById('sel-link')?.addEventListener('click', () => linkSelected('link'))
+  document.getElementById('sel-unlink')?.addEventListener('click', () => linkSelected('unlink'))
+  document.getElementById('sel-clear')?.addEventListener('click', () => { selected.clear(); render() })
 
   app.querySelectorAll('[data-cancel]').forEach((a) =>
     a.addEventListener('click', (e) => {
@@ -431,29 +481,66 @@ async function sync() {
 // a status write rather than a reorder. Applied optimistically and reverted if
 // GitHub rejects it.
 async function changeStatus(itemId, status) {
-  const it = BOARD.items.find((x) => x.id === itemId)
-  if (!it) return
-  const prev = { status: it.status, statusAt: it.statusAt }
+  const seed = BOARD.items.find((x) => x.id === itemId)
+  if (!seed) return
 
-  it.status = status
-  it.statusAt = new Date().toISOString()
-  pendingWrites.set(itemId, { status, expires: Date.now() + WRITE_GRACE_MS })
+  // A batch is one unit of work, so queueing or cancelling any member moves
+  // all of them — half a batch in the queue would be a lie to the agent.
+  const ids = batchMates(seed)
+  const now = new Date().toISOString()
+  const prev = new Map()
+  for (const id of ids) {
+    const it = BOARD.items.find((x) => x.id === id)
+    prev.set(id, { status: it.status, statusAt: it.statusAt })
+    it.status = status
+    it.statusAt = now
+    pendingWrites.set(id, { status, expires: Date.now() + WRITE_GRACE_MS })
+  }
   render()
 
   try {
     const res = await fetch(API + '/api/set-status', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ itemId, status }),
+      body: JSON.stringify({ itemIds: ids, status }),
     })
     const out = await res.json()
     if (!res.ok) throw new Error(out.error ?? res.statusText)
     pollStatus() // the write busted the server cache, so this confirms immediately
   } catch (err) {
-    pendingWrites.delete(itemId)
-    Object.assign(it, prev)
+    for (const id of ids) {
+      pendingWrites.delete(id)
+      Object.assign(BOARD.items.find((x) => x.id === id), prev.get(id))
+    }
     render()
     alert(`could not set status to "${status}": ` + err.message)
+  }
+}
+
+// --- linking ----------------------------------------------------------------
+
+// Linking writes a shared Batch number and pulls the members adjacent, so a
+// batch reads as one block. Both take a couple of seconds — the reorder is
+// several mutations — so the toolbar says what's happening.
+async function linkSelected(kind) {
+  if (linkBusy) return
+  linkBusy = kind === 'link' ? 'linking…' : 'unlinking…'
+  render()
+  try {
+    const res = await fetch(API + '/api/' + kind, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ itemIds: [...selected] }),
+    })
+    const out = await res.json()
+    if (!res.ok) throw new Error(out.error ?? res.statusText)
+    selected.clear()
+    linkBusy = ''
+    await load()
+  } catch (err) {
+    linkBusy = ''
+    render()
+    alert('could not ' + kind + ': ' + err.message)
   }
 }
 
@@ -529,7 +616,7 @@ function openNewTask() {
 function queueSignature() {
   // Includes membership so a Done item ageing past the window redraws even
   // though no status actually changed.
-  return BOARD.items.map((it) => `${it.id}:${it.status}:${inQueue(it) ? 1 : 0}`).join('|')
+  return BOARD.items.map((it) => `${it.id}:${it.status}:${it.batch}:${inQueue(it) ? 1 : 0}`).join('|')
 }
 
 async function pollStatus() {
@@ -552,6 +639,7 @@ async function pollStatus() {
 
       it.status = next.status
       it.statusAt = next.at
+      it.batch = next.batch ?? null
     }
     if (queueSignature() !== before) render() // re-rendering blindly would fight the search box
   } catch {

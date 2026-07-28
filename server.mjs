@@ -33,8 +33,11 @@ query($owner:String!, $number:Int!) {
       items(first:100) {
         nodes {
           id
-          fieldValueByName(name:"Status") {
+          status: fieldValueByName(name:"Status") {
             ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+          }
+          batch: fieldValueByName(name:"Batch") {
+            ... on ProjectV2ItemFieldNumberValue { number }
           }
           content {
             ... on Issue {
@@ -69,8 +72,9 @@ async function fetchBoard() {
       url: n.content.url,
       body: n.content.body ?? '',
       state: n.content.state,
-      status: n.fieldValueByName?.name ?? null,
-      statusAt: n.fieldValueByName?.updatedAt ?? null, // when Status last changed
+      status: n.status?.name ?? null,
+      statusAt: n.status?.updatedAt ?? null, // when Status last changed
+      batch: n.batch?.number ?? null, // items sharing a batch are one unit of work
       repo: n.content.repository.nameWithOwner,
       createdAt: n.content.createdAt,
       labels: n.content.labels.nodes.map((l) => ({ name: l.name, color: l.color })),
@@ -104,8 +108,11 @@ query($owner:String!, $number:Int!) {
       items(first:100) {
         nodes {
           id
-          fieldValueByName(name:"Status") {
+          status: fieldValueByName(name:"Status") {
             ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+          }
+          batch: fieldValueByName(name:"Batch") {
+            ... on ProjectV2ItemFieldNumberValue { number }
           }
         }
       }
@@ -121,24 +128,39 @@ async function statuses() {
   const res = await gh(['api', 'graphql', '-F', `owner=${OWNER}`, '-F', `number=${NUMBER}`, '-f', `query=${STATUS_QUERY}`])
   const nodes = res.data?.organization?.projectV2?.items?.nodes ?? []
   const data = Object.fromEntries(nodes.map((n) => [n.id,
-    { status: n.fieldValueByName?.name ?? null, at: n.fieldValueByName?.updatedAt ?? null }]))
+    { status: n.status?.name ?? null, at: n.status?.updatedAt ?? null, batch: n.batch?.number ?? null }]))
   statusCache = { at: Date.now(), data }
   return data
 }
 
-// Setting Status needs the field id and the option id for the target name.
-// Both are stable for the life of the project, so look them up once.
+// Field ids (and Status option ids) are stable for the life of the project, so
+// look them up once and keep them.
 let fieldCache = null
-async function statusField() {
+async function fields() {
   if (fieldCache) return fieldCache
   const q = `query($owner:String!, $number:Int!) {
-    organization(login:$owner) { projectV2(number:$number) {
-      field(name:"Status") { ... on ProjectV2SingleSelectField { id options { id name } } } } } }`
+    organization(login:$owner) { projectV2(number:$number) { fields(first:50) { nodes {
+      ... on ProjectV2Field { id name }
+      ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }`
   const res = await gh(['api', 'graphql', '-F', `owner=${OWNER}`, '-F', `number=${NUMBER}`, '-f', `query=${q}`])
-  const f = res.data?.organization?.projectV2?.field
-  if (!f) throw new Error('this project has no Status field')
-  fieldCache = { id: f.id, options: Object.fromEntries(f.options.map((o) => [o.name, o.id])) }
+  const nodes = res.data?.organization?.projectV2?.fields?.nodes ?? []
+  fieldCache = Object.fromEntries(nodes.filter((f) => f.name).map((f) => [f.name, {
+    id: f.id,
+    options: f.options ? Object.fromEntries(f.options.map((o) => [o.name, o.id])) : null,
+  }]))
   return fieldCache
+}
+
+async function statusField() {
+  const f = (await fields())['Status']
+  if (!f) throw new Error('this project has no Status field')
+  return f
+}
+
+async function batchField() {
+  const f = (await fields())['Batch']
+  if (!f) throw new Error('this project has no Batch field — create it as a Number field')
+  return f
 }
 
 async function setStatus(itemId, name) {
@@ -156,6 +178,63 @@ async function setStatus(itemId, name) {
   cache = { at: 0, data: null }
   statusCache = { at: 0, data: null }
   return { status: name }
+}
+
+// Items sharing a Batch number are one unit of work — one branch, one PR. The
+// agent's contract is: group items by Batch where Status is "Queued for Dev";
+// each group is a single job.
+async function link(itemIds) {
+  if (!Array.isArray(itemIds) || itemIds.length < 2) throw new Error('linking needs at least two items')
+
+  const { projectId, items } = await board({ fresh: true })
+  const field = await batchField()
+  const known = new Map(items.map((it) => [it.id, it]))
+  const targets = itemIds.filter((id) => known.has(id))
+  if (targets.length < 2) throw new Error('those items are no longer on the board')
+
+  // Reuse a batch number already on the selection, so adding a task to an
+  // existing batch merges rather than renumbering it.
+  const existing = [...new Set(targets.map((id) => known.get(id).batch).filter((b) => b != null))]
+  if (existing.length > 1) throw new Error(`selection spans batches ${existing.join(' and ')} — unlink one first`)
+  const batch = existing[0] ?? (Math.max(0, ...items.map((it) => it.batch ?? 0)) + 1)
+
+  const m = `mutation($p:ID!,$i:ID!,$f:ID!,$n:Float!){updateProjectV2ItemFieldValue(input:{
+    projectId:$p, itemId:$i, fieldId:$f, value:{number:$n}}){clientMutationId}}`
+  for (const id of targets) {
+    if (known.get(id).batch === batch) continue
+    const res = await gh(['api', 'graphql', '-f', `p=${projectId}`, '-f', `i=${id}`,
+      '-f', `f=${field.id}`, '-F', `n=${batch}`, '-f', `query=${m}`])
+    if (res.errors?.length) throw new Error(res.errors[0].message)
+  }
+
+  // Pull the whole batch adjacent, anchored at its topmost member, so a batch
+  // reads as one block in the queue instead of being scattered down the list.
+  const members = new Set(items.filter((it) => it.batch === batch).map((it) => it.id).concat(targets))
+  const order = items.map((it) => it.id)
+  const anchor = order.findIndex((id) => members.has(id))
+  const rest = order.filter((id) => !members.has(id))
+  const grouped = order.filter((id) => members.has(id))
+  rest.splice(anchor, 0, ...grouped)
+
+  cache = { at: 0, data: null }
+  statusCache = { at: 0, data: null }
+  await reorder(rest)
+  return { batch, items: [...members] }
+}
+
+async function unlink(itemIds) {
+  const { projectId } = await board()
+  const field = await batchField()
+  const m = `mutation($p:ID!,$i:ID!,$f:ID!){clearProjectV2ItemFieldValue(input:{
+    projectId:$p, itemId:$i, fieldId:$f}){clientMutationId}}`
+  for (const id of itemIds) {
+    const res = await gh(['api', 'graphql', '-f', `p=${projectId}`, '-f', `i=${id}`,
+      '-f', `f=${field.id}`, '-f', `query=${m}`])
+    if (res.errors?.length) throw new Error(res.errors[0].message)
+  }
+  cache = { at: 0, data: null }
+  statusCache = { at: 0, data: null }
+  return { cleared: itemIds.length }
 }
 
 // New tasks are created as real issues rather than project drafts: the board
@@ -276,9 +355,20 @@ createServer(async (req, res) => {
       return send(res, 200, JSON.stringify(await createTask({ title, body, queue })), 'application/json')
     }
     if (path === '/api/set-status' && req.method === 'POST') {
-      const { itemId, status } = JSON.parse(await readBody(req))
-      if (!itemId || !status) throw new Error('need itemId and status')
-      return send(res, 200, JSON.stringify(await setStatus(itemId, status)), 'application/json')
+      const { itemId, itemIds, status } = JSON.parse(await readBody(req))
+      const ids = itemIds ?? (itemId ? [itemId] : [])
+      if (!ids.length || !status) throw new Error('need itemId (or itemIds) and status')
+      for (const id of ids) await setStatus(id, status)
+      return send(res, 200, JSON.stringify({ status, count: ids.length }), 'application/json')
+    }
+    if (path === '/api/link' && req.method === 'POST') {
+      const { itemIds } = JSON.parse(await readBody(req))
+      return send(res, 200, JSON.stringify(await link(itemIds)), 'application/json')
+    }
+    if (path === '/api/unlink' && req.method === 'POST') {
+      const { itemIds } = JSON.parse(await readBody(req))
+      if (!itemIds?.length) throw new Error('need itemIds')
+      return send(res, 200, JSON.stringify(await unlink(itemIds)), 'application/json')
     }
     if (path === '/api/reorder' && req.method === 'POST') {
       const { order } = JSON.parse(await readBody(req))

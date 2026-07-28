@@ -31,6 +31,8 @@ gh auth login --web --scopes 'repo,read:org,workflow,project'
 | `BOARD_NUMBER` | `1` | project number |
 | `BOARD_REPO` | `freeflow-community/flow` | where **New task** files issues |
 
+The project needs a `Status` single-select and a `Batch` NUMBER field.
+
 ## What it shows
 
 Single column. The **active queue** is defined by Status, not by position: it
@@ -61,6 +63,24 @@ project draft, since the board only renders issues and an agent needs an issue
 number for a PR to close. A freshly-added item takes a few seconds to become
 visible to the project query, so `POST /api/new-task` waits until it is before
 replying; creating therefore takes ~5-8s, spent on the Create button.
+
+### Batches
+
+Two or more tasks that belong in one branch and one PR are **linked** into a
+batch: tick their checkboxes in the backlog and press **Link**. They get a
+shared `Batch` number (a NUMBER field on the project), a coloured left edge and
+a `B<n>` chip, and are pulled adjacent in the queue order so a batch reads as
+one block. **Unlink** clears it.
+
+Queueing or cancelling any member moves the whole batch — half a batch in the
+queue would misrepresent the work to the agent.
+
+**The agent's contract:** group project items by `Batch` where
+`Status = "Queued for Dev"`. Each group is one job — one branch, one PR closing
+every issue in it. Items with no `Batch` are a group of one.
+
+Linking is the slowest action here (~5s): it writes a field value per member and
+then reorders, which is several mutations.
 
 Click any row to expand the issue body inline. Backlog rows carry ▲/▼ buttons —
 moving an item up out of the backlog promotes it into the active queue.
