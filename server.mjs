@@ -33,7 +33,7 @@ query($owner:String!, $number:Int!) {
         nodes {
           id
           fieldValueByName(name:"Status") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
           }
           content {
             ... on Issue {
@@ -69,6 +69,7 @@ async function fetchBoard() {
       body: n.content.body ?? '',
       state: n.content.state,
       status: n.fieldValueByName?.name ?? null,
+      statusAt: n.fieldValueByName?.updatedAt ?? null, // when Status last changed
       repo: n.content.repository.nameWithOwner,
       createdAt: n.content.createdAt,
       labels: n.content.labels.nodes.map((l) => ({ name: l.name, color: l.color })),
@@ -103,7 +104,7 @@ query($owner:String!, $number:Int!) {
         nodes {
           id
           fieldValueByName(name:"Status") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
           }
         }
       }
@@ -118,9 +119,42 @@ async function statuses() {
   if (statusCache.data && Date.now() - statusCache.at < STATUS_TTL_MS) return statusCache.data
   const res = await gh(['api', 'graphql', '-F', `owner=${OWNER}`, '-F', `number=${NUMBER}`, '-f', `query=${STATUS_QUERY}`])
   const nodes = res.data?.organization?.projectV2?.items?.nodes ?? []
-  const data = Object.fromEntries(nodes.map((n) => [n.id, n.fieldValueByName?.name ?? null]))
+  const data = Object.fromEntries(nodes.map((n) => [n.id,
+    { status: n.fieldValueByName?.name ?? null, at: n.fieldValueByName?.updatedAt ?? null }]))
   statusCache = { at: Date.now(), data }
   return data
+}
+
+// Setting Status needs the field id and the option id for the target name.
+// Both are stable for the life of the project, so look them up once.
+let fieldCache = null
+async function statusField() {
+  if (fieldCache) return fieldCache
+  const q = `query($owner:String!, $number:Int!) {
+    organization(login:$owner) { projectV2(number:$number) {
+      field(name:"Status") { ... on ProjectV2SingleSelectField { id options { id name } } } } } }`
+  const res = await gh(['api', 'graphql', '-F', `owner=${OWNER}`, '-F', `number=${NUMBER}`, '-f', `query=${q}`])
+  const f = res.data?.organization?.projectV2?.field
+  if (!f) throw new Error('this project has no Status field')
+  fieldCache = { id: f.id, options: Object.fromEntries(f.options.map((o) => [o.name, o.id])) }
+  return fieldCache
+}
+
+async function setStatus(itemId, name) {
+  const { projectId } = await board()
+  const field = await statusField()
+  const optionId = field.options[name]
+  if (!optionId) throw new Error(`unknown status "${name}" — have: ${Object.keys(field.options).join(', ')}`)
+
+  const m = `mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{
+    projectId:$p, itemId:$i, fieldId:$f, value:{singleSelectOptionId:$o}}){clientMutationId}}`
+  const res = await gh(['api', 'graphql', '-f', `p=${projectId}`, '-f', `i=${itemId}`,
+    '-f', `f=${field.id}`, '-f', `o=${optionId}`, '-f', `query=${m}`])
+  if (res.errors?.length) throw new Error(res.errors[0].message)
+
+  cache = { at: 0, data: null }
+  statusCache = { at: 0, data: null }
+  return { status: name }
 }
 
 // Place one item directly after another (or at the top when `after` is null).
@@ -203,6 +237,11 @@ createServer(async (req, res) => {
     }
     if (path === '/api/status') {
       return send(res, 200, JSON.stringify(await statuses()), 'application/json')
+    }
+    if (path === '/api/set-status' && req.method === 'POST') {
+      const { itemId, status } = JSON.parse(await readBody(req))
+      if (!itemId || !status) throw new Error('need itemId and status')
+      return send(res, 200, JSON.stringify(await setStatus(itemId, status)), 'application/json')
     }
     if (path === '/api/reorder' && req.method === 'POST') {
       const { order } = JSON.parse(await readBody(req))
