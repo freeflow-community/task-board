@@ -44,6 +44,12 @@
   }
   .bar .label { font: 10px var(--mono); letter-spacing: .09em; color: var(--muted); text-transform: uppercase; }
   .bar .count { font: 10px var(--mono); color: var(--muted); }
+  .bar .grow { margin-left: auto; }
+  .bar .toggle {
+    font: 10px var(--mono); color: var(--muted); cursor: pointer;
+    text-decoration: none; user-select: none; flex: none;
+  }
+  .bar .toggle:hover { color: var(--accent); }
   .bar .sync.pending { color: #a8791a; }
   .bar .sync.syncing { color: var(--accent); }
   .bar .sync.error { color: #b3261e; font-weight: 600; }
@@ -57,7 +63,9 @@
   select { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: none; }
 
   .row {
-    display: grid; grid-template-columns: 15px 22px 1fr auto auto; gap: 1px 8px;
+    /* Column 2 holds either a rank number or a status pill; sized for the
+       widest pill (DONE) so the pill never runs into the title. */
+    display: grid; grid-template-columns: 15px 34px 1fr auto auto; gap: 1px 8px;
     padding: 7px 13px; border-bottom: 1px solid var(--line); cursor: pointer;
     align-items: start;
   }
@@ -104,6 +112,13 @@
   .queue .bar { background: #f4f7fd; }
   .queue .row.is-active { background: #f7faff; }
   .queue .row.is-done { opacity: .62; }
+  /* Revealed completions sit under the live rows, set apart so finished work is
+     never mistaken for work in flight. */
+  .queue .review { border-top: 1px dashed var(--line); background: #f8f9fa; }
+  .queue .review-head {
+    padding: 5px 13px 2px; font: 9.5px var(--mono); letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted);
+  }
   .queue .row.is-active .title { font-weight: 600; }
   .pill {
     display: inline-block; padding: 1px 5px; border-radius: 3px; background: var(--accent);
@@ -195,6 +210,7 @@ const API = window.__API__ ?? ''
 // it land before it drops off.
 const QUEUE_STATUSES = ['Queued for Dev', 'In Progress', 'Blocked']
 const DONE_WINDOW_MS = 15 * 60 * 1000
+const REVIEW_LIMIT = 10 // completed tasks kept behind the queue's review toggle
 const POLL_MS = 5000
 const NEW_TASK_REPO = window.__REPO__ ?? 'freeflow-community/flow'
 
@@ -252,6 +268,7 @@ let syncState = 'idle' // idle | pending | syncing | error
 // otherwise overwrite the optimistic value and snap the row back.
 const selected = new Set()   // item ids ticked for linking
 let linkBusy = ''            // label shown while a link/unlink is in flight
+let showDone = false         // review toggle: reveal recently completed work
 
 // Batches are drawn from a small cycling palette; the number itself is shown
 // in the chip, so the colour only has to separate neighbours.
@@ -281,9 +298,22 @@ function partition() {
   }
 }
 
+// Finished work, newest first. The freshest few are already rendered in the
+// queue proper, so they're skipped here — between the two lists you see the
+// last REVIEW_LIMIT completions exactly once each. Board order is arbitrary for
+// this purpose, so sort by when Status became Done; an item with no timestamp
+// sorts last rather than jumping the queue on NaN.
+function recentlyCompleted() {
+  return BOARD.items
+    .filter((it) => it.status === 'Done')
+    .sort((a, b) => (b.statusAt ? Date.parse(b.statusAt) : -Infinity) - (a.statusAt ? Date.parse(a.statusAt) : -Infinity))
+    .slice(0, REVIEW_LIMIT)
+    .filter((it) => !doneRecently(it))
+}
+
 // --- rendering --------------------------------------------------------------
 
-function rowHTML(it, rank, { inQ = false, movable = false, first = false, last = false } = {}) {
+function rowHTML(it, rank, { inQ = false, review = false, movable = false, first = false, last = false } = {}) {
   const open = expanded.has(it.number)
   const pill = STATUS_PILL[it.status]
 
@@ -305,16 +335,16 @@ function rowHTML(it, rank, { inQ = false, movable = false, first = false, last =
        </div>`
     : '<div class="mv"></div>'
 
-  const when = inQ && it.statusAt ? ago(it.statusAt) : age(it.createdAt)
+  const when = (inQ || review) && it.statusAt ? ago(it.statusAt) : age(it.createdAt)
   const picked = selected.has(it.id)
   const edge = it.batch != null ? `box-shadow: inset 3px 0 0 ${batchColour(it.batch)};` : ''
   const chip = it.batch != null
     ? `<span class="bchip" style="background:${batchColour(it.batch)}">B${Math.round(it.batch)}</span>` : ''
 
-  return `<div class="row${it.status === 'In Progress' ? ' is-active' : ''}${open ? ' open' : ''}${doneRecently(it) ? ' is-done' : ''}${picked ? ' picked' : ''}" data-num="${it.number}" style="${edge}">
+  return `<div class="row${it.status === 'In Progress' ? ' is-active' : ''}${open ? ' open' : ''}${doneRecently(it) || review ? ' is-done' : ''}${picked ? ' picked' : ''}" data-num="${it.number}" style="${edge}">
       <div class="pick-cell">${inQ && !BOARD.stale
         ? `<input type="checkbox" class="pick" data-pick="${esc(it.id)}"${picked ? ' checked' : ''}>` : ''}</div>
-      <div class="rank">${inQ && pill ? `<span class="pill${pill.cls}">${pill.text}</span>` : esc(rank)}</div>
+      <div class="rank">${(inQ || review) && pill ? `<span class="pill${pill.cls}">${pill.text}</span>` : esc(rank)}</div>
       <div class="title">${esc(it.title)}</div>
       <div class="age">${esc(when)}</div>
       ${mv}
@@ -333,6 +363,7 @@ function matches(it) {
 
 function render() {
   const { queue, backlog: allBacklog } = partition()
+  const completed = recentlyCompleted()
   // A selected task can leave the queue under us — cancelled, or finished and
   // aged out. Don't keep it selected with no checkbox to untick.
   const live = new Set(queue.map((it) => it.id))
@@ -359,6 +390,10 @@ function render() {
       <div class="bar">
         <span class="label">Active queue</span>
         <span class="count">${queue.length ? queue.length + ' active' : 'empty'}</span>
+        <span class="grow"></span>
+        ${completed.length
+          ? `<a class="toggle" id="toggle-done">${showDone ? '▾' : '▸'} ${completed.length} completed</a>`
+          : ''}
       </div>
       ${selected.size ? `<div class="seltools">
         <span class="n">${selected.size} selected</span>
@@ -371,6 +406,10 @@ function render() {
       ${queue.length
         ? queue.map((it) => rowHTML(it, null, { inQ: true })).join('')
         : `<div class="empty">Nothing queued<div class="hint">set a task to “Queued for Dev”</div></div>`}
+      ${showDone && completed.length ? `<div class="review">
+        <div class="review-head">completed · newest first</div>
+        ${completed.map((it) => rowHTML(it, null, { review: true })).join('')}
+      </div>` : ''}
     </section>
 
     <section class="backlog">
@@ -406,6 +445,8 @@ function render() {
       selected.has(id) ? selected.delete(id) : selected.add(id)
       render()
     }))
+
+  document.getElementById('toggle-done')?.addEventListener('click', () => { showDone = !showDone; render() })
 
   document.getElementById('sel-link')?.addEventListener('click', () => linkSelected('link'))
   document.getElementById('sel-unlink')?.addEventListener('click', () => linkSelected('unlink'))

@@ -42,9 +42,18 @@ it drops off. Each row shows its status as a pill and how long ago it was set.
 
 The **backlog** is strictly unstarted work — `Todo` only (and items with no
 Status, so nothing silently disappears). A `Done` item whose window has expired
-shows **nowhere**: it's finished, and listing it as backlog would claim the
-opposite. `Blocked` stays in the active queue rather than dropping out, because
-it's claimed work that stalled and needs a human.
+shows **nowhere** in the two lists: it's finished, and listing it as backlog
+would claim the opposite. `Blocked` stays in the active queue rather than
+dropping out, because it's claimed work that stalled and needs a human.
+
+Finished work is still reachable for review. The active-queue bar carries an
+**N completed** toggle that reveals the last 10 completions, newest first, under
+a divider. The freshest ones are already rendered in the queue proper and are
+skipped in the reveal, so between the two you see the last 10 exactly once each
+— which is why the toggle's count shrinks as work lands and grows back as it
+ages out. Revealed rows are dimmed and read-only apart from the **queue**
+button, which restages a finished task that needs redoing. The toggle is view
+state only: nothing is written, and it resets on reload.
 
 Status is polled every 5s from `GET /api/status`, which fetches ids, status and
 `updatedAt` only, and is cached 3s server-side so several open tabs cost one API
